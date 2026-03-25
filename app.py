@@ -32,7 +32,7 @@ def load_from_folder(folder: str) -> dict[str, pd.DataFrame]:
     data = {}
     for f in sorted(Path(folder).glob("prices_*.xlsx")):
         ts = parse_time_from_filename(f.name)
-        df = pd.read_excel(f)
+        df = pd.read_excel(f, engine="calamine")
         df["Артикул"] = df["Артикул"].astype(str)
         data[ts] = df
     return data
@@ -42,7 +42,7 @@ def load_uploaded(files) -> dict[str, pd.DataFrame]:
     data = {}
     for f in sorted(files, key=lambda x: x.name):
         ts = parse_time_from_filename(f.name)
-        df = pd.read_excel(f)
+        df = pd.read_excel(f, engine="calamine")
         df["Артикул"] = df["Артикул"].astype(str)
         data[ts] = df
     return data
