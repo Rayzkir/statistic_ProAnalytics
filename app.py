@@ -220,10 +220,15 @@ def build_timeline(snapshots: dict[str, pd.DataFrame], article: str) -> pd.DataF
         row = df_art.iloc[0]
         for col in PRICE_COLS:
             if col in df.columns and pd.notna(row.get(col)):
+                date_col = DATE_COL_MAP.get(col, "")
+                upd_date = ""
+                if date_col and date_col in df.columns and pd.notna(row.get(date_col)):
+                    upd_date = str(row[date_col]).replace("T", " ").replace("Z", "")
                 rows.append({
                     "Время": ts,
                     "Тип цены": col,
                     "Цена": row[col],
+                    "Дата обновления": upd_date,
                 })
     return pd.DataFrame(rows)
 
@@ -391,6 +396,7 @@ with tab2:
                     y="Цена",
                     color="Тип цены",
                     markers=True,
+                    hover_data={"Дата обновления": True},
                 )
                 fig_line.update_layout(
                     height=400,
@@ -478,21 +484,23 @@ with tab3:
             },
         )
 
-        # Timeline charts for top-5 most frequently changing
-        st.subheader("Динамика цен — топ часто меняющихся товаров")
-        top5 = freq_counts.head(5)
-        for _, row in top5.iterrows():
-            art = row["Артикул"]
-            name = row["Наименование"]
-            n_changes = int(row["Кол-во изменений"])
-            timeline = build_timeline(snapshots, art)
+        # Timeline for selected article
+        st.subheader("Динамика цены товара")
+        freq_options = {
+            f"{r['Артикул']} — {str(r['Наименование'])[:50]} ({int(r['Кол-во изменений'])} изм.)": r["Артикул"]
+            for _, r in freq_counts.iterrows()
+        }
+        selected_freq = st.selectbox("Выберите товар", list(freq_options.keys()), key="freq_select")
+        if selected_freq:
+            selected_freq_art = freq_options[selected_freq]
+            timeline = build_timeline(snapshots, selected_freq_art)
             if not timeline.empty:
-                st.markdown(f"**{art}** — {name[:60]} ({n_changes} изм.)")
                 fig_tl = px.line(
                     timeline, x="Время", y="Цена", color="Тип цены", markers=True,
+                    hover_data={"Дата обновления": True},
                 )
                 fig_tl.update_layout(
-                    height=350,
+                    height=400,
                     xaxis_title="Время забора данных",
                     yaxis_title="Цена, ₽",
                     legend_title="",
@@ -540,7 +548,7 @@ if st.sidebar.button("Скачать HTML-отчёт"):
             name = name_series.iloc[0] if isinstance(name_series, pd.Series) else name_series
             tl = build_timeline(snapshots, art)
             if not tl.empty:
-                fig = px.line(tl, x="Время", y="Цена", color="Тип цены", markers=True)
+                fig = px.line(tl, x="Время", y="Цена", color="Тип цены", markers=True, hover_data={"Дата обновления": True})
                 fig.update_layout(height=350, xaxis_title="Время забора", yaxis_title="Цена, ₽", legend_title="", template="plotly")
                 export_lines[f"{art} — {str(name)[:50]}"] = fig
 
