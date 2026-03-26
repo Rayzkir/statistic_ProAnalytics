@@ -405,7 +405,7 @@ with tab2:
                     legend_title="",
                     template="plotly",
                 )
-                st.plotly_chart(fig_line, use_container_width=True, theme=None)
+                st.plotly_chart(fig_line, use_container_width=True, theme=None, key=f"line_{selected_art}")
 
 # ── Tab 3: Frequently changing products ────────────────────────────────
 with tab3:
@@ -506,7 +506,7 @@ with tab3:
                     legend_title="",
                     template="plotly",
                 )
-                st.plotly_chart(fig_tl, use_container_width=True, theme=None)
+                st.plotly_chart(fig_tl, use_container_width=True, theme=None, key=f"freq_tl_{selected_freq_art}")
 
 # ── Export to HTML ───────────────────────────────────────────────────────
 st.sidebar.markdown("---")
