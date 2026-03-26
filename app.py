@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
-import re
+import re, zipfile, io
 from datetime import datetime, date
 
 st.set_page_config(page_title="Мониторинг цен", page_icon="📊", layout="wide")
@@ -46,6 +46,21 @@ def load_uploaded(files) -> dict[str, pd.DataFrame]:
         df["Артикул"] = df["Артикул"].astype(str)
         data[ts] = df
     return data
+
+
+def load_from_zip(zip_files) -> dict[str, pd.DataFrame]:
+    data = {}
+    for zf in zip_files:
+        with zipfile.ZipFile(io.BytesIO(zf.read()), "r") as z:
+            xlsx_names = sorted(n for n in z.namelist() if n.endswith(".xlsx") and not n.startswith("__MACOSX"))
+            for name in xlsx_names:
+                basename = name.split("/")[-1]
+                ts = parse_time_from_filename(basename)
+                with z.open(name) as excel_file:
+                    df = pd.read_excel(io.BytesIO(excel_file.read()), engine="calamine")
+                    df["Артикул"] = df["Артикул"].astype(str)
+                    data[ts] = df
+    return dict(sorted(data.items()))
 
 
 def compute_changes(snapshots: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -216,22 +231,28 @@ def build_timeline(snapshots: dict[str, pd.DataFrame], article: str) -> pd.DataF
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.title("⚙️ Настройки")
 
-source = st.sidebar.radio("Источник данных", ["Из папки", "Загрузить файлы"])
+source = st.sidebar.radio("Источник данных", ["Из папки", "Загрузить файлы", "Загрузить ZIP"])
 
 snapshots = {}
 if source == "Из папки":
     folder = st.sidebar.text_input("Путь к папке", value=str(Path(__file__).parent))
     if folder:
         snapshots = load_from_folder(folder)
-else:
+elif source == "Загрузить файлы":
     uploaded = st.sidebar.file_uploader(
         "Загрузите xlsx-файлы", type=["xlsx"], accept_multiple_files=True
     )
     if uploaded:
         snapshots = load_uploaded(uploaded)
+else:
+    uploaded_zips = st.sidebar.file_uploader(
+        "Загрузите ZIP-архивы с xlsx", type=["zip"], accept_multiple_files=True
+    )
+    if uploaded_zips:
+        snapshots = load_from_zip(uploaded_zips)
 
 if not snapshots:
-    st.warning("Нет данных. Укажите папку с файлами или загрузите xlsx.")
+    st.warning("Нет данных. Укажите папку с файлами, загрузите xlsx или ZIP-архив.")
     st.stop()
 
 st.sidebar.markdown(f"**Загружено снимков:** {len(snapshots)}")
@@ -243,7 +264,7 @@ search = st.sidebar.text_input("🔍 Поиск (артикул / названи
 # ── Main ─────────────────────────────────────────────────────────────────────
 st.title("📊 Мониторинг цен Озон / WB")
 
-tab1, tab2 = st.tabs(["📋 Все товары", "📈 Изменения цен"])
+tab1, tab2, tab3 = st.tabs(["📋 Все товары", "📈 Изменения цен", "🔄 Частые изменения"])
 
 # ── Tab 1: All products ─────────────────────────────────────────────────────
 with tab1:
@@ -380,6 +401,105 @@ with tab2:
                 )
                 st.plotly_chart(fig_line, use_container_width=True, theme=None)
 
+# ── Tab 3: Frequently changing products ────────────────────────────────
+with tab3:
+    freq_changes = compute_changes(snapshots)
+
+    if freq_changes.empty:
+        st.info("Между снимками изменений цен не обнаружено.")
+    else:
+        if platform_filter != "Все":
+            freq_changes = freq_changes[freq_changes["Площадка"] == platform_filter]
+        if search:
+            mask = (
+                freq_changes["Артикул"].str.contains(search, case=False, na=False)
+                | freq_changes["Наименование"].str.contains(search, case=False, na=False)
+            )
+            freq_changes = freq_changes[mask]
+
+        # Count changes per article
+        freq_counts = (
+            freq_changes.groupby(["Артикул", "Наименование"])
+            .agg(
+                Кол_во_изменений=("Разница ₽", "size"),
+                Площадки=("Площадка", lambda x: ", ".join(sorted(x.unique()))),
+                Типы_цен=("Тип цены", lambda x: ", ".join(sorted(x.unique()))),
+                Средняя_разница=("Разница ₽", "mean"),
+                Макс_разница=("Разница ₽", lambda x: x.abs().max()),
+            )
+            .reset_index()
+            .sort_values("Кол_во_изменений", ascending=False)
+        )
+        freq_counts.columns = [
+            "Артикул", "Наименование", "Кол-во изменений",
+            "Площадки", "Типы цен", "Средняя разница ₽", "Макс |разница| ₽",
+        ]
+
+        st.subheader("Рейтинг товаров по частоте изменений цен")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Товаров с изменениями", len(freq_counts))
+        c2.metric("Макс. изменений у товара", int(freq_counts["Кол-во изменений"].max()))
+        avg_changes = freq_counts["Кол-во изменений"].mean()
+        c3.metric("Среднее кол-во изменений", f"{avg_changes:.1f}")
+
+        # Bar chart — top by frequency
+        top_freq = freq_counts.head(20).copy()
+        top_freq["Лейбл"] = top_freq["Артикул"] + " — " + top_freq["Наименование"].str[:40]
+
+        fig_freq = px.bar(
+            top_freq.sort_values("Кол-во изменений"),
+            x="Кол-во изменений",
+            y="Лейбл",
+            orientation="h",
+            text="Кол-во изменений",
+            color="Кол-во изменений",
+            color_continuous_scale=["#66BB6A", "#FFA726", "#EF5350"],
+        )
+        fig_freq.update_layout(
+            height=max(400, len(top_freq) * 35),
+            yaxis_title="",
+            xaxis_title="Количество изменений цен",
+            template="plotly",
+            coloraxis_showscale=False,
+        )
+        fig_freq.update_traces(textposition="outside")
+        st.plotly_chart(fig_freq, use_container_width=True, theme=None)
+
+        # Table
+        st.subheader("Детальная таблица")
+        st.dataframe(
+            freq_counts.reset_index(drop=True),
+            use_container_width=True,
+            height=400,
+            column_config={
+                "Средняя разница ₽": st.column_config.NumberColumn(format="%+.0f ₽"),
+                "Макс |разница| ₽": st.column_config.NumberColumn(format="%.0f ₽"),
+            },
+        )
+
+        # Timeline charts for top-5 most frequently changing
+        st.subheader("Динамика цен — топ часто меняющихся товаров")
+        top5 = freq_counts.head(5)
+        for _, row in top5.iterrows():
+            art = row["Артикул"]
+            name = row["Наименование"]
+            n_changes = int(row["Кол-во изменений"])
+            timeline = build_timeline(snapshots, art)
+            if not timeline.empty:
+                st.markdown(f"**{art}** — {name[:60]} ({n_changes} изм.)")
+                fig_tl = px.line(
+                    timeline, x="Время", y="Цена", color="Тип цены", markers=True,
+                )
+                fig_tl.update_layout(
+                    height=350,
+                    xaxis_title="Время забора данных",
+                    yaxis_title="Цена, ₽",
+                    legend_title="",
+                    template="plotly",
+                )
+                st.plotly_chart(fig_tl, use_container_width=True, theme=None)
+
 # ── Export to HTML ───────────────────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.subheader("📤 Экспорт")
@@ -416,12 +536,13 @@ if st.sidebar.button("Скачать HTML-отчёт"):
     export_lines = {}
     if not changes_all.empty:
         for art in changes_all["Артикул"].unique():
-            name = changes_all.loc[changes_all["Артикул"] == art, "Наименование"].iloc[0]
+            name_series = changes_all.loc[changes_all["Артикул"] == art, "Наименование"]
+            name = name_series.iloc[0] if isinstance(name_series, pd.Series) else name_series
             tl = build_timeline(snapshots, art)
             if not tl.empty:
                 fig = px.line(tl, x="Время", y="Цена", color="Тип цены", markers=True)
                 fig.update_layout(height=350, xaxis_title="Время забора", yaxis_title="Цена, ₽", legend_title="", template="plotly")
-                export_lines[f"{art} — {name[:50]}"] = fig
+                export_lines[f"{art} — {str(name)[:50]}"] = fig
 
     period = f"{list(snapshots.keys())[0]} — {list(snapshots.keys())[-1]}"
     html = generate_html_report(df_export, changes_all, export_bar, export_lines, period)
